@@ -6,7 +6,18 @@ private let logger = Logger(subsystem: "com.VoiceInk", category: "CursorPaster")
 
 class CursorPaster {
 
+    /// Tracks whether we've already shown the accessibility prompt this session.
+    private static var hasRequestedAccessibility = false
+
     static func pasteAtCursor(_ text: String) {
+        // If accessibility isn't granted, prompt the user once per session
+        // and show a notification so they know what to do.
+        if !AXIsProcessTrusted() && !hasRequestedAccessibility {
+            hasRequestedAccessibility = true
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            AXIsProcessTrustedWithOptions(options)
+        }
+
         let pasteboard = NSPasteboard.general
         let shouldRestoreClipboard = UserDefaults.standard.bool(forKey: "restoreClipboardAfterPaste")
 
@@ -40,13 +51,21 @@ class CursorPaster {
             if useAppleScript {
                 pasteUsingAppleScript()
             } else {
-                pasteFromClipboard()
+                // Neither CGEvent nor AppleScript will work without permissions.
+                // The text is on the clipboard — notify the user to paste manually.
+                NotificationManager.shared.showNotification(
+                    title: "Text copied — press ⌘V to paste. Grant Accessibility in Settings to enable auto-paste.",
+                    type: .info
+                )
+                logger.warning("Accessibility not trusted — text is on clipboard, user must paste manually")
             }
         }
 
         if effectiveRestore {
             let restoreDelay = UserDefaults.standard.double(forKey: "clipboardRestoreDelay")
-            let delay = max(restoreDelay, 0.25)
+            // When accessibility isn't available, give the user more time to paste manually
+            let minDelay = AXIsProcessTrusted() ? 0.25 : 10.0
+            let delay = max(restoreDelay, minDelay)
 
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 if !savedContents.isEmpty {
